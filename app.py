@@ -2,95 +2,120 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import plotly.graph_objects as go
 
 # --- 1. SET UP THE APP INTERFACE ---
-st.title("📈 Statistical Prediction & Entry Dashboard")
-st.markdown("This free app looks at market trends to predict up/down momentum.")
+st.set_page_config(layout="wide") # Use wide screen mode for better charts
+st.title("📈 Quant Momentum & Volatility App")
+st.markdown("Advanced Dashboard using MACD, Standard Deviations (Bollinger), and RSI.")
 
-# Sidebar for User Inputs
-st.sidebar.header("Settings")
-ticker = st.sidebar.text_input("Enter Index/Stock Ticker:", "SPY").upper()
+st.sidebar.header("Scan Parameters")
+ticker = st.sidebar.text_input("Enter Ticker (e.g. SPY, AAPL, BTC-USD):", "SPY").upper()
 timeframe = st.sidebar.selectbox("Select Time Frame:", ["1d", "1h", "15m", "5m"])
 
-# --- 2. GET THE FREE DATA (BUG-FIXED!) ---
+# --- 2. DATA PULL (With Multi-Index Fix) ---
 @st.cache_data
 def load_data(ticker_symbol, interval):
-    # Determine how many days of data to pull based on timeframe to stay within free limits
     period = "1mo" if interval in ["15m", "5m", "1h"] else "2y"
-    
-    # Download data from Yahoo Finance
     data = yf.download(tickers=ticker_symbol, period=period, interval=interval, progress=False)
-    
-    # ---> YFINANCE BUG FIX: Flatten messy stacked columns <---
     if isinstance(data.columns, pd.MultiIndex):
-        # Forces pandas to just use basic names ('Close', 'High', etc.)
         data.columns = data.columns.get_level_values(0) 
-        
     return data
 
-st.write(f"Fetching {timeframe} live data for {ticker}...")
 df = load_data(ticker, timeframe)
 
-if not df.empty:
-    # --- 3. THE MATH & PATTERN RECOGNITION (The "Brain") ---
-    # Calculate Simple Moving Averages
+if not df.empty and len(df) > 35:
+    # --- 3. ADVANCED QUANT MATHEMATICS ---
+    
+    # A. Volatility: Bollinger Bands (2 Standard Deviations)
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
-    df['SMA_50'] = df['Close'].rolling(window=50).mean()
+    rolling_std = df['Close'].rolling(window=20).std()
+    df['Upper_Band'] = df['SMA_20'] + (rolling_std * 2)
+    df['Lower_Band'] = df['SMA_20'] - (rolling_std * 2)
 
-    # Calculate basic Relative Strength Index (RSI) manually
+    # B. Momentum: MACD (Moving Average Convergence Divergence)
+    ema_12 = df['Close'].ewm(span=12, adjust=False).mean()
+    ema_26 = df['Close'].ewm(span=26, adjust=False).mean()
+    df['MACD'] = ema_12 - ema_26
+    df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
+
+    # C. Oscillators: Standard RSI
     delta = df['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
+    
+    df = df.dropna()
 
-    df = df.dropna() # Remove empty rows so we don't trip up
-
-    # --- 4. THE PREDICTION LOGIC ---
+    # --- 4. CONFLUENCE PREDICTION LOGIC ---
     last_row = df.iloc[-1].copy()
     
-    # Ensure our SMA columns evaluate to pure scalar float numbers, not messy Series 
-    sma20 = float(last_row['SMA_20'])
-    sma50 = float(last_row['SMA_50'])
-    rsi = float(last_row['RSI'])
+    # Force convert to pure python floats for absolute stability
     curr_close = float(last_row['Close'])
+    upper_bb = float(last_row['Upper_Band'])
+    lower_bb = float(last_row['Lower_Band'])
+    macd = float(last_row['MACD'])
+    macd_sig = float(last_row['MACD_Signal'])
+    rsi = float(last_row['RSI'])
     
+    # We look for "Confluence" (Multiple indicators agreeing)
     signal = "NEUTRAL"
     confidence = 0
     
-    if sma20 > sma50:
-        signal = "⬆️ LIKELY UP"
-        confidence += 40
-        if 50 < rsi < 70:
-             confidence += 35 # Healthy momentum
-    elif sma20 < sma50:
-        signal = "⬇️ LIKELY DOWN"
-        confidence += 40
-        if 30 < rsi < 50:
-             confidence += 35 # Healthy downward momentum
+    # Check Reversals first (Are we violently outside statistical bands?)
+    if curr_close >= upper_bb:
+        signal = "🔥 DANGER: Overbought Reversal Imminent (DOWN)"
+        confidence = 90
+    elif curr_close <= lower_bb:
+        signal = "🚀 DANGER: Oversold Bounce Imminent (UP)"
+        confidence = 90
+        
+    # If inside bands, evaluate trend direction via MACD
+    else:
+        if macd > macd_sig: # Bullish Momentum Cross
+            signal = "⬆️ LIKELY UP"
+            confidence += 45
+            if 50 < rsi < 70: confidence += 20 # Add healthy RSI validation
+        elif macd < macd_sig: # Bearish Momentum Cross
+            signal = "⬇️ LIKELY DOWN"
+            confidence += 45
+            if 30 < rsi < 50: confidence += 20
             
-    # Oversold / Overbought reversal signals override standard momentum
-    if rsi >= 75:
-        signal = "⬇️ REVERSAL RISK (DOWN)"
-        confidence = 80
-    elif rsi <= 25:
-         signal = "⬆️ REVERSAL RISK (UP)"
-         confidence = 80
-
-    # --- 5. SHOW REAL-TIME UI RESULTS ---
-    col1, col2, col3 = st.columns(3)
+    # --- 5. RENDER THE PROFESSIONAL DASHBOARD ---
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Current Price", f"${curr_close:.2f}")
-    col2.metric("Prediction / Signal", signal)
-    col3.metric("Signal Confidence", f"{confidence}%")
+    col2.metric("System Signal", signal)
+    col3.metric("System Confidence", f"{confidence}%")
+    col4.metric("RSI Score", f"{rsi:.1f}")
 
-    st.subheader(f"Current RSI is: {rsi:.2f}")
+    st.markdown("---")
+    
+    # --- INTERACTIVE CANDLESTICK CHART ---
+    st.subheader(f"{ticker} Technical Chart")
+    
+    chart_df = df.tail(100) # Only chart the most recent 100 periods so it looks clean
+    
+    fig = go.Figure(data=[go.Candlestick(x=chart_df.index,
+                    open=chart_df['Open'], high=chart_df['High'],
+                    low=chart_df['Low'], close=chart_df['Close'],
+                    name="Price Action")])
+                    
+    # Plotting our Volatility Bands
+    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['Upper_Band'], mode='lines', name='Upper Bollinger (Short Zone)', line=dict(color='rgba(255, 0, 0, 0.4)', dash='dot')))
+    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['Lower_Band'], mode='lines', name='Lower Bollinger (Buy Zone)', line=dict(color='rgba(0, 255, 0, 0.4)', dash='dot')))
+    
+    fig.update_layout(xaxis_rangeslider_visible=False, height=500, margin=dict(l=0, r=0, t=10, b=0))
+    st.plotly_chart(fig, use_container_width=True)
 
-    # Show raw historical statistics in a nice table
-    st.write("Recent Market Statistics Data:")
-    st.dataframe(df[['Close', 'SMA_20', 'SMA_50', 'RSI']].tail())
-    
-    # Line chart using Streamlit's built-in chart
-    st.line_chart(df[['Close', 'SMA_20', 'SMA_50']])
-    
+    # Let the user peek at the hard statistics logic
+    st.write("📊 Live Algorithmic Status (Last Bar Check)")
+    stat_data = {
+        "Metric": ["Price relative to upper band", "Price relative to lower band", "MACD Histogram (Momentum)"],
+        "Value": [f"{(upper_bb - curr_close):.2f} pts away", f"{(curr_close - lower_bb):.2f} pts away", f"{(macd - macd_sig):.2f}"]
+    }
+    st.dataframe(stat_data)
+
 else:
-    st.error("Could not grab data. Check ticker symbol or internet connection.")
+    st.error(f"Waiting for market data, or symbol not found.")
