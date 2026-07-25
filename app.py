@@ -2,125 +2,150 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
 
-# --- 1. APP SETUP ---
+# --- 1. CORE CONFIGURATION ---
 st.set_page_config(layout="wide")
-st.title("🏦 Institutional Smart Money (ICT) Algorithm")
-st.markdown("Advanced Price Action tracker analyzing Order Flow, Liquidity, and Imbalances instead of lagging retail math.")
+st.title("🧮 Institutional Liquidity Sweep Engine")
+st.markdown("Raw data logic prioritizing Fractal Structure Sweeps with strict >3:1 Risk constraints.")
 
-st.sidebar.header("Smart Money Setup")
-ticker = st.sidebar.text_input("Enter Ticker:", "SPY").upper()
-timeframe = st.sidebar.selectbox("Select Time Frame:", ["15m", "1h", "1d"])
+col1, col2 = st.sidebar.columns(2)
+ticker = col1.text_input("Ticker:", "BTC-USD").upper()
+timeframe = col2.selectbox("Frame:", ["5m", "15m", "1h", "1m"])
 
-# --- 2. DATA PULL & FIX ---
-@st.cache_data
-def load_data(ticker_symbol, interval):
-    period = "60d" if interval in ["15m", "1h"] else "2y"
-    data = yf.download(tickers=ticker_symbol, period=period, interval=interval, progress=False)
-    if isinstance(data.columns, pd.MultiIndex):
-        data.columns = data.columns.get_level_values(0) 
-    return data
+# --- 2. FAST MARKET DATA FETCH ---
+@st.cache_data(ttl=30)
+def load_order_flow(ticker_symbol, interval):
+    if interval == "1m": period = "5d"
+    elif interval in ["5m", "15m"]: period = "20d"
+    else: period = "2y"
+    
+    # Grab most recent market data instantly 
+    df = yf.download(tickers=ticker_symbol, period=period, interval=interval, progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+         df.columns = df.columns.get_level_values(0) 
+    return df
 
-df = load_data(ticker, timeframe)
+with st.spinner("Compiling order flow footprints..."):
+    df = load_order_flow(ticker, timeframe)
 
 if not df.empty and len(df) > 50:
-    # --- 3. ICT & SMC ALGORITHMIC LOGIC (NO INDICATORS) ---
+    # --- 3. HARDCORE MATH & SMC FRACTALS (No Indicators) ---
+    df = df.dropna().copy()
     
-    # 1. Premium & Discount Array (Determine the Institutional Trade Zone)
-    # We look at the macro swing (last 50 periods)
-    macro_high = df['High'].tail(50).max()
-    macro_low = df['Low'].tail(50).min()
-    equilibrium = (macro_high + macro_low) / 2
+    # Mathematical Swing Matrix to identify Major Liquidity Pools
+    # Look back 15 candles and look forward 15 candles to ensure true pivot dominance
+    pivot_length = 15 
     
-    # 2. Fair Value Gaps (Imbalance/Voids that attract price mathematically)
-    # A Bullish FVG occurs if Low of candle 'n' > High of candle 'n-2' 
-    df['Bull_FVG'] = df['Low'] > df['High'].shift(2)
-    # A Bearish FVG occurs if High of candle 'n' < Low of candle 'n-2'
-    df['Bear_FVG'] = df['High'] < df['Low'].shift(2)
+    df['Fractal_High'] = df['High'][df['High'] == df['High'].rolling(window=(pivot_length*2)+1, center=True).max()]
+    df['Fractal_Low'] = df['Low'][df['Low'] == df['Low'].rolling(window=(pivot_length*2)+1, center=True).min()]
     
-    # 3. Target Liquidity (Buy Side and Sell Side Puddles - Retail Stop Losses)
-    # Looking for pivot points where massive pending orders are sitting
-    df['BSL'] = df['High'].rolling(10).max().shift(1)  # Buy Side Liquidity (Swing Highs)
-    df['SSL'] = df['Low'].rolling(10).min().shift(1)   # Sell Side Liquidity (Swing Lows)
+    # Fill forwards to establish current horizontal critical thresholds (Important Levels)
+    df['Active_BSL'] = df['Fractal_High'].ffill() 
+    df['Active_SSL'] = df['Fractal_Low'].ffill()
+
+    # Determine structural bias (Macro) via past 50 period equilibrium 
+    recent_range_high = df['High'].tail(50).max()
+    recent_range_low = df['Low'].tail(50).min()
+    equilibrium = (recent_range_high + recent_range_low) / 2
     
-    # --- 4. PRICE PREDICTION & ACTION GENERATOR ---
-    last_row = df.iloc[-1]
-    curr_close = float(last_row['Close'])
-    curr_low = float(last_row['Low'])
-    curr_high = float(last_row['High'])
-    ssl_target = float(last_row['SSL'])
-    bsl_target = float(last_row['BSL'])
-
-    # Institutional rules mandate action ONLY in valid pricing models
-    zone_state = "PREMIUM (NO BUY ZONE)" if curr_close > equilibrium else "DISCOUNT (NO SELL ZONE)"
-    color_state = "red" if zone_state.startswith("PREM") else "green"
-
-    signal = "NEUTRAL 😴 (Wait for manipulation...)"
-    details = "Waiting for retail to set structural liquidity lines."
+    # --- 4. THE LIQUIDITY TRAP & RR (RISK/REWARD) CALCULATION ---
+    # Slice off the exact last complete sequence 
+    current_idx = df.index[-1]
+    curr_data = df.iloc[-1]
     
-    # Algorithmic Conditions based on ICT/SMC 
-    if curr_close < equilibrium: # IN DISCOUNT
-        if curr_low < ssl_target:
-             signal = "🔥 SMC BUY SIGNAL: SELL SIDE SWEPT"
-             details = "Turtle Soup Play: Stop-losses hunted in Discount. Large buy side probability initiated!"
-        elif curr_close < (equilibrium - ((equilibrium-macro_low)*0.7)):
-             signal = "🟢 HIGH-CONVICTION DISCOUNT ACCUMULATION"
-             details = "Deep Discount (Oversold Structurally). Institutional Buys Highly Likely."
+    c_close = float(curr_data['Close'])
+    c_high = float(curr_data['High'])
+    c_low = float(curr_data['Low'])
+    
+    # Fetch Important Levels that are nearest active
+    nearest_bsl = float(curr_data['Active_BSL'])
+    nearest_ssl = float(curr_data['Active_SSL'])
+    
+    signal = "NEUTRAL: Seeking Liquidity Engagements"
+    status_code = "grey"
+    
+    trade_exec = False
+    direction = ""
+    entry = 0.0
+    sl = 0.0
+    tp = 0.0
+    
+    # Filter 1: LONG ENTRY CALCULATION (SELL SIDE SWEEP)
+    # Price pierced the support SSL liquidity (took out retailers), but has rapidly reversed above it.
+    if (c_low < nearest_ssl) and (c_close > nearest_ssl) and (c_close < equilibrium):
+        signal = "🚨 SMC BUY ENGINE EXECUTED: TURTLE SOUP SELL-SIDE SWEEP"
+        status_code = "green"
+        direction = "LONG"
+        
+        entry = c_close 
+        sl_buffer = (entry * 0.0005) # Half a tenth percent dynamic buffer for market makers pushing limit spreads
+        sl = c_low - sl_buffer # Safety line strictly beneath the aggressive institutional trap wick
+        
+        # MATH LIMITS: R/R constraint formulation 
+        risk_per_share = entry - sl
+        target_reward = risk_per_share * 3.0 # Hard lock on 3R calculation minimum
+        tp = entry + target_reward
+        trade_exec = True
 
-    elif curr_close > equilibrium: # IN PREMIUM
-        if curr_high > bsl_target:
-             signal = "🚨 SMC SELL SIGNAL: BUY SIDE SWEPT"
-             details = "Liquidity Run: Short positions being engineered above previous highs in a Premium Zone."
+    # Filter 2: SHORT ENTRY CALCULATION (BUY SIDE SWEEP)
+    # Price wick sweeps premium retail High stops (BSL), but candle bodies crush backwards. 
+    elif (c_high > nearest_bsl) and (c_close < nearest_bsl) and (c_close > equilibrium):
+        signal = "🚨 SMC SELL ENGINE EXECUTED: TURTLE SOUP BUY-SIDE SWEEP"
+        status_code = "red"
+        direction = "SHORT"
+        
+        entry = c_close 
+        sl_buffer = (entry * 0.0005) 
+        sl = c_high + sl_buffer
+        
+        risk_per_share = sl - entry
+        target_reward = risk_per_share * 3.0
+        tp = entry - target_reward
+        trade_exec = True
 
-    # --- 5. RENDER REAL-TIME INTERFACE ---
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Current Target Price", f"${curr_close:.2f}")
-    col2.metric("ICT Bias Zone", zone_state)
-    col3.metric("Buy Side Liquidity Target", f"${bsl_target:.2f}")
-    col4.metric("Sell Side Liquidity Target", f"${ssl_target:.2f}")
 
-    # Visualizing Institutional Logic
-    st.subheader(signal)
-    st.markdown(details)
+    # --- 5. RENDER PURE EXECUTABLE DATA ---
+    st.markdown(f"### Real-time Matrix Bias: `{ticker} [{timeframe}]`")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Live Action Output", f"${c_close:,.2f}")
+    col2.metric("Important Level: Resist. (BSL)", f"${nearest_bsl:,.2f}")
+    col3.metric("Important Level: Support (SSL)", f"${nearest_ssl:,.2f}")
+
+    if trade_exec:
+        if direction == "LONG":
+            st.success(f"{signal}")
+            st.write("Retail support liquidated and immediately snapped upwards by volume.")
+        else:
+            st.error(f"{signal}")
+            st.write("Retail upside breakouts were trapped, pushing short structures.")
+
+        # --- EXACT EXECUTION BLOCKS ---
+        st.markdown(f"### 🔥 TRADE METRICS GENERATED")
+        r_cols = st.columns(4)
+        
+        # We output pure order parameters needed for placing live ticket setups 
+        r_cols[0].metric(label="Direction", value=direction)
+        r_cols[1].metric(label="Action Point (Entry)", value=f"${entry:,.4f}")
+        r_cols[2].metric(label="Safety Void (SL) - Under Wick", value=f"${sl:,.4f}", delta="In-market risk mapping")
+        r_cols[3].metric(label="Alpha Extraction (TP) - Fixed >3:1", value=f"${tp:,.4f}", delta="Required 3R math generated")
+        
+        st.write("#### Data Audit (RR Configuration Validation)")
+        dist_risk = abs(entry - sl)
+        dist_tp = abs(entry - tp)
+        ratio_verify = dist_tp / dist_risk if dist_risk > 0 else 0 
+        st.text(f">> Mathematical Absolute Risk / Return Configuration Audit:")
+        st.text(f"      Spread Distance at risk : {dist_risk:,.5f} units per share/contract")
+        st.text(f"      Calculated Exit yield   : {dist_tp:,.5f} units per share/contract")
+        st.text(f"      Live System Yield R-Calc: {ratio_verify:.2f}:1")
+    else:
+        st.info("Scanner Engine Iterating Data. Zero edge criteria satisfied for entry execution.")
+        st.write("Patience mechanism active: Holding fire for structural stop sweeps of liquidity parameters detailed in Matrix block above. Only extreme deviations will generate setup code.")
+        
     st.markdown("---")
-    
-    st.subheader(f"📊 SMC Raw Footprint / ICT Setup: {ticker}")
-    chart_df = df.tail(80) # Last 80 candles so market structure looks clear
-
-    fig = go.Figure()
-    
-    # Plot Standard Price Candles
-    fig.add_trace(go.Candlestick(x=chart_df.index,
-                                 open=chart_df['Open'], high=chart_df['High'],
-                                 low=chart_df['Low'], close=chart_df['Close'],
-                                 name="Raw Price"))
-                                 
-    # Plot Liquidity Sweep Lines (Retail Traps)
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['BSL'], 
-                             mode='lines', line=dict(color='yellow', dash='dot', width=1.5), 
-                             name='Buy-Side Liquidity (Resistance Pool)'))
-    fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df['SSL'], 
-                             mode='lines', line=dict(color='yellow', dash='dot', width=1.5), 
-                             name='Sell-Side Liquidity (Support Pool)'))
-    
-    # Add Premium and Discount Block visualization 
-    fig.add_hrect(y0=macro_low, y1=equilibrium, fillcolor="rgba(0,255,0,0.1)", 
-                  layer="below", line_width=0, name="Discount Accumulation")
-    fig.add_hrect(y0=equilibrium, y1=macro_high, fillcolor="rgba(255,0,0,0.1)", 
-                  layer="below", line_width=0, name="Premium Distribution")
-
-    # Add 50% Equilibrium strict dividing line
-    fig.add_trace(go.Scatter(x=chart_df.index, y=[equilibrium]*len(chart_df), 
-                             mode='lines', line=dict(color='white', width=1), 
-                             name='Equilibrium (0.5 Zone)'))
-
-    # Dark background formatting with no rangeslider junk
-    fig.update_layout(xaxis_rangeslider_visible=False, height=550, template="plotly_dark",
-                      margin=dict(l=0, r=0, t=20, b=0), showlegend=True,
-                      legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01))
-    
-    st.plotly_chart(fig, use_container_width=True)
+    # Output Raw Logic Validation Engine Table to prove no hidden lag indicators were used 
+    st.write("##### Raw Market Mechanics Data Terminal")
+    audit_df = df[['Open','High','Low','Close','Active_SSL','Active_BSL']].tail(10)
+    st.dataframe(audit_df.iloc[::-1]) # Flips frame so newest tick rests cleanly at index top
 
 else:
-    st.error("Missing Data!")
+    st.error("No raw flow recorded for specific parameters.")
